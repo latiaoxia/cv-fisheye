@@ -145,8 +145,11 @@ int V4l2Capture::readFrame()
     buf.m.planes = &plane;
 
     if (ioctl(m_fd, VIDIOC_DQBUF, &buf)) {
-        // std::cout << "no buffer " << errno << std::endl;
-        return -1;
+        if (errno == EAGAIN)
+            return -1;
+        else
+            throw std::runtime_error("VIDIOC_DQBUF err: " +
+                                     std::to_string(errno));
     }
 
     return buf.index;
