@@ -89,6 +89,15 @@ Render::Render()
 {
 }
 
+Render::Render(int width, int height, int pixelSize_, int camNum_, int camBufNum_) :
+    textureWidth(width),
+    textureHeight(height),
+    pixelSize(pixelSize_),
+    camNum(camNum_),
+    camBufNum(camBufNum_)
+{
+}
+
 Render::~Render()
 {
     m_device->unmapMemory(*m_uStageMem);
@@ -126,22 +135,20 @@ void Render::init()
     createSyncObjects();
 }
 
-void Render::updateTexture(int index, int subIndex)
+void Render::updateTexture(const PixelBufferBase& buf)
 {
-    int imageWidth = 1280;
-    int imageHeight = 800;
-    int frameSize = imageWidth * imageHeight * 4;
+    int frameSize = textureWidth * textureHeight * pixelSize;
 
     transitionImageLayout(*m_utextureImage, vk::ImageLayout::eUndefined,
                           vk::ImageLayout::eTransferDstOptimal,
                           vk::PipelineStageFlagBits::eTopOfPipe,
                           vk::PipelineStageFlagBits::eTransfer);
-    vk::BufferImageCopy copyRegion(frameSize * (index * 4 + subIndex),
+    vk::BufferImageCopy copyRegion(frameSize * (buf.getIndex() * camNum + buf.getSubIndex()),
                                    0, 0,
                                    vk::ImageSubresourceLayers(
                                        vk::ImageAspectFlagBits::eColor,
-                                       0, index, 1), vk::Offset3D(0, 0, 0),
-                                   vk::Extent3D(imageWidth, imageHeight, 1));
+                                       0, buf.getIndex(), 1), vk::Offset3D(0, 0, 0),
+                                   vk::Extent3D(textureWidth, textureHeight, 1));
     std::vector<vk::UniqueCommandBuffer> ucmdBuffers =
         m_device->allocateCommandBuffersUnique(
                 vk::CommandBufferAllocateInfo(*m_commandPool,
@@ -164,9 +171,9 @@ void Render::updateTexture(int index, int subIndex)
 
 }
 
-void Render::getBufferAddrs(int index, std::array<void *, 4> &bufferMaps)
+std::vector<std::vector<PixelBufferBase>> Render::getBufferBank()
 {
-    bufferMaps = m_stageMemMaps[index];
+    return m_stageMemMaps;
 }
 
 void Render::render(int index)
@@ -850,14 +857,16 @@ void Render::transitionImageLayout(vk::Image image, vk::ImageLayout oldLayout,
 
 void Render::createTextureImage()
 {
-    int imageWidth = 1280;
-    int imageHeight = 800;
-    int frameSize = imageWidth * imageHeight * 4;
+    if (textureWidth <= 0 || textureHeight <= 0 || pixelSize <= 0 ||
+        camNum <= 0 || camBufNum <= 2) {
+        throw std::runtime_error("invalid texture format!");
+    }
 
-    m_stageMemMaps.resize(4);
+    int frameSize = textureWidth * textureHeight * pixelSize;
+    m_stageMemMaps.resize(camNum);
 
     m_uStageBuffer = m_device->createBufferUnique(
-            vk::BufferCreateInfo({}, frameSize * 16,
+            vk::BufferCreateInfo({}, frameSize * camNum * camBufNum,
                 vk::BufferUsageFlagBits::eTransferSrc));
     vk::MemoryRequirements stageMemReq = m_device->getBufferMemoryRequirements(*m_uStageBuffer);
     uint32_t stageMemTypeIndex =
@@ -868,19 +877,19 @@ void Render::createTextureImage()
             vk::MemoryAllocateInfo(stageMemReq.size, stageMemTypeIndex));
     m_device->bindBufferMemory(*m_uStageBuffer, *m_uStageMem, 0);
 
-    void *data = m_device->mapMemory(*m_uStageMem, 0, frameSize * 16);
-    for (size_t i = 0; i < m_stageMemMaps.size(); i++) {
-        for (size_t j = 0; j < m_stageMemMaps[i].size(); j++) {
-            m_stageMemMaps[i][j] = data;
+    void *data = m_device->mapMemory(*m_uStageMem, 0, frameSize * camNum * camBufNum);
+    for (int i = 0; i < camNum; i++) {
+        for (int j = 0; j < camBufNum; j++) {
+            m_stageMemMaps[i].push_back(PixelBufferBase(data, frameSize, textureWidth, textureHeight, i, j));
             data = static_cast<char*>(data) + frameSize;
         }
     }
 
     m_utextureImage = m_device->createImageUnique(
             vk::ImageCreateInfo({}, vk::ImageType::e2D,
-                vk::Format::eR8G8B8A8Unorm,
-                vk::Extent3D(imageWidth, imageHeight, 1),
-                1, 4, vk::SampleCountFlagBits::e1, // TODO layout number dynamic
+                vk::Format::eB8G8R8A8Unorm,
+                vk::Extent3D(textureWidth, textureHeight, 1),
+                1, camNum, vk::SampleCountFlagBits::e1, // TODO layout number dynamic
                 vk::ImageTiling::eOptimal,
                 vk::ImageUsageFlagBits::eSampled |
                 vk::ImageUsageFlagBits::eTransferDst,
@@ -902,7 +911,7 @@ void Render::createTextureImageView()
     m_utextureImageView = m_device->createImageViewUnique(
             vk::ImageViewCreateInfo({}, *m_utextureImage,
                 vk::ImageViewType::e2DArray,
-                vk::Format::eR8G8B8A8Unorm, {},
+                vk::Format::eB8G8R8A8Unorm, {},
                 vk::ImageSubresourceRange(
                     vk::ImageAspectFlagBits::eColor,
                     0, 1, 0, 4)));

@@ -1,3 +1,5 @@
+#pragma once
+
 #include <vulkan/vulkan.h>
 #include <vulkan/vulkan.hpp>
 #define GLFW_INCLUDE_NONE //no gl or gl es headers
@@ -9,9 +11,13 @@
 #include <array>
 #include <cstddef>
 
+#include "message.hpp"
+
 class Render
 {
 public:
+    struct Commit {};
+
     struct Vertex
     {
         glm::vec2 pos;
@@ -50,8 +56,8 @@ public:
     };
 
     void init();
-    void updateTexture(int index, int subIndex);
-    void getBufferAddrs(int index, std::array<void *, 4> &bufferMaps);
+    void updateTexture(const PixelBufferBase& buf);
+    std::vector<std::vector<PixelBufferBase>> getBufferBank();
     void render(int index);
     bool checkValidationLayerSupport();
     bool shouldStop()
@@ -68,6 +74,9 @@ public:
     }
 
     Render();
+    Render(int width, int height, int pixelSize_, int camNum_, int camBufNum_);
+    Render(const Render&) = delete;
+    Render& operator=(const Render&) = delete;
     virtual ~Render();
 
 private:
@@ -95,13 +104,19 @@ private:
 
     vk::UniqueCommandPool m_commandPool;
 
+    //texture
     vk::UniqueImage m_utextureImage;
     vk::UniqueDeviceMemory m_utextureMem;
     vk::UniqueImageView m_utextureImageView;
     vk::UniqueSampler m_utextureSampler;
     vk::UniqueBuffer m_uStageBuffer;
     vk::UniqueDeviceMemory m_uStageMem;
-    std::vector<std::array<void *, 4>> m_stageMemMaps;
+    int textureWidth = 0;
+    int textureHeight = 0;
+    int pixelSize = 0;
+    int camNum = 0;
+    int camBufNum = 0;
+    std::vector<std::vector<PixelBufferBase>> m_stageMemMaps;
 
     vk::UniqueBuffer m_uVertexBuffer;
     vk::UniqueDeviceMemory m_uVertexBufferMem;

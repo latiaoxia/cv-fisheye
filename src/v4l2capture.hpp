@@ -5,67 +5,90 @@
 #include <vector>
 #include <array>
 
-class V4l2Capture
-{
-public:
+#include "message.hpp"
+
+namespace v4l2 {
+    struct Start {};
+
     enum class PixFormat
     {
         XBGR32 = V4L2_PIX_FMT_XBGR32,
     };
 
-    struct ImgFormat
+    class Buffer;
+    class Capture
     {
-        int width;
-        int height;
-        PixFormat m_pixFmt;
+    public:
+        Capture() = default;
+        Capture(const Capture&) = delete;
+        Capture& operator=(const Capture&) = delete;
+        virtual ~Capture();
 
-        ImgFormat(int width = -1, int height = -1,
-                  PixFormat pixFmt = PixFormat::XBGR32) :
-            width(width),
-            height(height),
-            m_pixFmt(pixFmt)
-        {}
+        void open(const std::string &path, enum PixFormat pixFormat,
+                  const std::vector<PixelBufferBase>& buffers);
+        void start();
+        void stop();
+        int readFrame();
+        void doneFrame(int index);
+        int getFd() const { return m_fd; }
+        Buffer dequeBuffer();
+
+    private:
+        int m_fd = -1;
+        int m_width;
+        int m_height;
+        int m_frameSize;
+        uint32_t m_pixFmt;
+        int m_bufferNum;
+        std::vector<PixelBufferBase> m_buffers;
+
+        void enumFormat() const;
     };
 
-    struct Buffer
+    class Buffer : public PixelBufferBase
     {
-        void *start;
-        size_t length;
+    public:
+        Buffer(const Buffer&) = delete;
+        Buffer& operator=(const Buffer&) = delete;
 
-        Buffer(void *start_ = nullptr, size_t length_ = 0) :
-            start(start_),
-            length(length_)
-        {}
+        Buffer() = default;
 
-        Buffer& operator=(const Buffer& other)
+        Buffer(Capture* cap_, const PixelBufferBase& bufBase) :
+            cap(cap_),
+            PixelBufferBase(bufBase)
+        {
+        }
+
+        Buffer(Buffer&& other) :
+            PixelBufferBase(other),
+            cap(std::exchange(other.cap, nullptr))
+        {
+        }
+
+        Buffer& operator = (Buffer&& other)
         {
             if (this != &other) {
-                start = other.start;
-                length = other.length;
+                release();
+                cap = std::exchange(other.cap, nullptr);
             }
+
             return *this;
+        }
+
+        ~Buffer()
+        {
+            release();
+        }
+
+    private:
+        Capture* cap = nullptr;
+
+        void release()
+        {
+            if (cap)
+                cap->doneFrame(getSubIndex());
+            cap = nullptr;
         }
     };
 
-    V4l2Capture();
-    virtual ~V4l2Capture();
-
-    void open(const std::string &path, const ImgFormat &imgFormat,
-              const std::array<Buffer, 4> &buffers);
-    void start();
-    void stop();
-    int readFrame();
-    void doneFrame(int index);
-    int getFd() { return m_fd; }
-
-private:
-    int m_fd = -1;
-    int m_width;
-    int m_height;
-    int m_frameSize;
-    uint32_t m_pixFmt;
-    int m_bufferNum;
-    std::array<Buffer, 4> m_buffers;
-
-    void enumFormat();
-};
+}

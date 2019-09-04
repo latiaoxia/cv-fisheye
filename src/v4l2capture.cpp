@@ -10,33 +10,30 @@
 #include <iostream>
 #include <cstring>
 
-V4l2Capture::V4l2Capture()
+namespace v4l2 {
+Capture::~Capture()
 {
+    if (m_fd != -1)
+        ::close(m_fd);
 }
 
-V4l2Capture::~V4l2Capture()
-{
-    ::close(m_fd);
-}
-
-void V4l2Capture::open(const std::string &path, const ImgFormat &imgFormat,
-                       const std::array<Buffer, 4> &buffers)
+void Capture::open(const std::string &path, enum PixFormat pixFormat,
+                   const std::vector<PixelBufferBase>& buffers)
 {
     int ret;
 
-    if (imgFormat.width <= 0 ||
-        imgFormat.height <= 0 ||
-        buffers.size() < 2) {
+    if (buffers.size() < 2 ||
+        buffers[0].getWidth() <= 0 ||
+        buffers[0].getHeight() <= 0) {
         throw std::runtime_error("invalid initialization params");
     }
 
-    m_width = imgFormat.width;
-    m_height = imgFormat.height;
-    m_pixFmt = static_cast<uint32_t>(imgFormat.m_pixFmt);
+    m_width = buffers[0].getWidth();
+    m_height = buffers[0].getHeight();
+    m_pixFmt = static_cast<uint32_t>(pixFormat);
     m_bufferNum = buffers.size();
 
     m_fd = ::open(path.c_str(), O_RDWR | O_NONBLOCK);
-    // m_fd = ::open(path.c_str(), O_RDWR);
     if (m_fd == -1) {
         throw std::runtime_error("failed to open: " + path);
     }
@@ -96,16 +93,13 @@ void V4l2Capture::open(const std::string &path, const ImgFormat &imgFormat,
     }
 
     m_buffers = buffers;
-}
 
-void V4l2Capture::start()
-{
-    for (int i = 0; i < m_bufferNum; i++) {
+    for (int i = 0; i < m_buffers.size(); i++) {
         struct v4l2_buffer buf = {};
         struct v4l2_plane plane = {};
 
-        plane.length = m_buffers.at(i).length;
-        plane.m.userptr = reinterpret_cast<unsigned long>(m_buffers.at(i).start);
+        plane.length = m_buffers.at(i).getLength();
+        plane.m.userptr = reinterpret_cast<unsigned long>(m_buffers.at(i).getStart());
 
         buf.type = V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE;
         buf.memory = V4L2_MEMORY_USERPTR;
@@ -118,14 +112,17 @@ void V4l2Capture::start()
             throw std::runtime_error("VIDIOC_QBUF error");
         }
     }
+}
 
+void Capture::start()
+{
     enum v4l2_buf_type type = V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE;
     if (ioctl(m_fd, VIDIOC_STREAMON, &type)) {
         throw std::runtime_error("VIDIOC_STREAMON error");
     }
 }
 
-void V4l2Capture::stop()
+void Capture::stop()
 {
     enum v4l2_buf_type type = V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE;
 
@@ -134,7 +131,7 @@ void V4l2Capture::stop()
     }
 }
 
-int V4l2Capture::readFrame()
+int Capture::readFrame()
 {
     struct v4l2_buffer buf = {};
     struct v4l2_plane plane = {};
@@ -155,13 +152,13 @@ int V4l2Capture::readFrame()
     return buf.index;
 }
 
-void V4l2Capture::doneFrame(int index)
+void Capture::doneFrame(int index)
 {
     struct v4l2_buffer buf = {};
     struct v4l2_plane plane = {};
 
-    plane.length = m_buffers.at(index).length;
-    plane.m.userptr = reinterpret_cast<unsigned long>(m_buffers.at(index).start);
+    plane.length = m_buffers.at(index).getLength();
+    plane.m.userptr = reinterpret_cast<unsigned long>(m_buffers.at(index).getStart());
 
     buf.type = V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE;
     buf.memory = V4L2_MEMORY_USERPTR;
@@ -175,7 +172,17 @@ void V4l2Capture::doneFrame(int index)
 
 }
 
-void V4l2Capture::enumFormat()
+Buffer Capture::dequeBuffer()
+{
+    int index = readFrame();
+
+    if (index == -1)
+        return Buffer();
+
+    return Buffer(this, m_buffers[index]);
+}
+
+void Capture::enumFormat() const
 {
     int ret;
 
@@ -192,4 +199,4 @@ void V4l2Capture::enumFormat()
                   << std::string(reinterpret_cast<char *>(&fmtdesc.pixelformat));
     }
 }
-
+}
