@@ -24,20 +24,16 @@ namespace messaging
         WrappedMessage(const Msg& contents_) :
             contents(contents_)
         {}
-
-        WrappedMessage(Msg&& contents_) :
-            contents(std::move(contents_))
-        {}
     };
 
     class Queue
     {
     public:
         template<typename T>
-        void push(T&& msg)
+        void push(const T& msg)
         {
             std::lock_guard<std::mutex> lk(m);
-            q.push(std::make_shared<WrappedMessage<T>>(std::forward<T>(msg)));
+            q.push(std::make_shared<WrappedMessage<T>>(msg));
             c.notify_all();
         }
 
@@ -203,10 +199,10 @@ namespace messaging
         {}
 
         template<typename Msg>
-        void send(Msg&& msg)
+        void send(const Msg& msg)
         {
             if(q) {
-                q->push(std::forward<Msg>(msg));
+                q->push(msg);
             }
         }
 

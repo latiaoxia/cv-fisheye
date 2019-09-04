@@ -1,9 +1,11 @@
 #pragma once
 
-#include <linux/videodev2.h>
 #include <string>
 #include <vector>
 #include <array>
+#include <memory>
+
+#include <linux/videodev2.h>
 
 #include "message.hpp"
 
@@ -31,7 +33,7 @@ namespace v4l2 {
         int readFrame();
         void doneFrame(int index);
         int getFd() const { return m_fd; }
-        Buffer dequeBuffer();
+        std::shared_ptr<Buffer> dequeBuffer();
 
     private:
         int m_fd = -1;

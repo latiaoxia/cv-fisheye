@@ -127,8 +127,8 @@ private:
 
                         for (int i = 0; i < nevent; i++) {
                             int data = events[i].data.u32;
-                            v4l2::Buffer buf(captures[data].dequeBuffer());
-                            render.send(std::move(static_cast<PixelBufferBase>(buf)));
+                            std::shared_ptr<PixelBufferBase> pb(captures[data].dequeBuffer());
+                            render.send(pb);
                         }
                         render.send(Render::Commit());
                     }
@@ -163,10 +163,10 @@ public:
         try {
             for(;;) {
                 incoming.wait()
-                    .handle<PixelBufferBase>(
-                        [&](PixelBufferBase& buf)
+                    .handle<std::shared_ptr<PixelBufferBase>>(
+                        [&](std::shared_ptr<PixelBufferBase>& pbuf)
                         {
-                            render.updateTexture(buf);
+                            render.updateTexture(pbuf);
                         }
                     )
                     .handle<Render::Commit>(

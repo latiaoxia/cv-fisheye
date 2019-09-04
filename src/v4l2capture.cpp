@@ -172,14 +172,14 @@ void Capture::doneFrame(int index)
 
 }
 
-Buffer Capture::dequeBuffer()
+std::shared_ptr<Buffer> Capture::dequeBuffer()
 {
     int index = readFrame();
 
     if (index == -1)
-        return Buffer();
+        return std::make_shared<Buffer>();
 
-    return Buffer(this, m_buffers[index]);
+    return std::make_shared<Buffer>(this, m_buffers[index]);
 }
 
 void Capture::enumFormat() const

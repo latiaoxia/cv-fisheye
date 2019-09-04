@@ -10,6 +10,7 @@
 #include <string>
 #include <array>
 #include <cstddef>
+#include <memory>
 
 #include "message.hpp"
 
@@ -56,7 +57,7 @@ public:
     };
 
     void init();
-    void updateTexture(const PixelBufferBase& buf);
+    void updateTexture(const std::shared_ptr<PixelBufferBase>& pbuf);
     std::vector<std::vector<PixelBufferBase>> getBufferBank();
     void render(int index);
     bool checkValidationLayerSupport();

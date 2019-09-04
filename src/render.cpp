@@ -135,7 +135,7 @@ void Render::init()
     createSyncObjects();
 }
 
-void Render::updateTexture(const PixelBufferBase& buf)
+void Render::updateTexture(const std::shared_ptr<PixelBufferBase>& pbuf)
 {
     int frameSize = textureWidth * textureHeight * pixelSize;
 
@@ -143,11 +143,11 @@ void Render::updateTexture(const PixelBufferBase& buf)
                           vk::ImageLayout::eTransferDstOptimal,
                           vk::PipelineStageFlagBits::eTopOfPipe,
                           vk::PipelineStageFlagBits::eTransfer);
-    vk::BufferImageCopy copyRegion(frameSize * (buf.getIndex() * camNum + buf.getSubIndex()),
+    vk::BufferImageCopy copyRegion(frameSize * (pbuf->getIndex() * camNum + pbuf->getSubIndex()),
                                    0, 0,
                                    vk::ImageSubresourceLayers(
                                        vk::ImageAspectFlagBits::eColor,
-                                       0, buf.getIndex(), 1), vk::Offset3D(0, 0, 0),
+                                       0, pbuf->getIndex(), 1), vk::Offset3D(0, 0, 0),
                                    vk::Extent3D(textureWidth, textureHeight, 1));
     std::vector<vk::UniqueCommandBuffer> ucmdBuffers =
         m_device->allocateCommandBuffersUnique(
