@@ -231,7 +231,6 @@ namespace messaging
     private:
         Queue q;
     };
-
 }
 
 class PixelBufferBase

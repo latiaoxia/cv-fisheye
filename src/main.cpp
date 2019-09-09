@@ -4,6 +4,7 @@
 #include <vector>
 #include <chrono>
 #include <thread>
+#include <map>
 
 #include <signal.h>
 #include <sys/epoll.h>
@@ -19,136 +20,11 @@
 #include "replxx.hxx"
 #include "message.hpp"
 
-class Tick {
-	typedef std::vector<char32_t> keys_t;
-	std::thread _thread;
-	int _tick;
-	bool _alive;
-	keys_t _keys;
-	replxx::Replxx& _replxx;
-
-public:
-	Tick( replxx::Replxx& replxx_, std::string const& keys_ = {} )
-		: _thread()
-		, _tick( 0 )
-		, _alive( false )
-		, _keys( keys_.begin(), keys_.end() )
-		, _replxx( replxx_ ) {
-	}
-	void start() {
-		_alive = true;
-		_thread = std::thread( &Tick::run, this );
-	}
-	void stop() {
-		_alive = false;
-		_thread.join();
-	}
-	void run() {
-		std::string s;
-		while ( _alive ) {
-			if ( _keys.empty() ) {
-				_replxx.print( "%d\n", _tick );
-			} else if ( _tick < static_cast<int>( _keys.size() ) ) {
-				_replxx.emulate_key_press( _keys[_tick] );
-			} else {
-				break;
-			}
-			++ _tick;
-			std::this_thread::sleep_for( std::chrono::seconds( 1 ) );
-		}
-	}
-};
-
-static volatile bool keepRunning = true;
-
-class CaptureWorker
-{
-public:
-    CaptureWorker(std::vector<v4l2::Capture>& caps, enum v4l2::PixFormat pixFormat,
-                  const std::vector<std::vector<PixelBufferBase>>& bufBank,
-                  messaging::Sender render_) :
-        captures(caps),
-        render(render_)
-    {
-        for (size_t i = 0; i < captures.size(); i++) {
-            captures[i].open("/dev/video" + std::to_string(i), pixFormat,
-                             bufBank[i]);
-            captures[i].start();
-        }
-    }
-
-    void run()
-    {
-        state = &CaptureWorker::captureAll;
-        try {
-            for (;;) {
-                (this->*state)();
-            }
-        } catch (messaging::CloseQueue&) {
-        }
-    }
-
-    void done()
-    {
-        getSender().send(messaging::CloseQueue());
-    }
-
-    messaging::Sender getSender()
-    {
-        return incoming;
-    }
-
-private:
-    void captureAll()
-    {
-        incoming.wait()
-            .handle<v4l2::Start>(
-                [&](const v4l2::Start&)
-                {
-                    epoll_fd = epoll_create1(0);
-
-                    for (size_t i = 0; i < captures.size(); i++) {
-                        struct epoll_event event = {};
-                        event.data.u32 = i;
-                        event.events = EPOLLIN; // do not use edge trigger
-                        int ret = epoll_ctl(epoll_fd, EPOLL_CTL_ADD, captures[i].getFd(),
-                                &event);
-                        if (ret == -1)
-                            throw std::runtime_error("EPOLL_CTL_ADD error");
-                    }
-
-                    while (incoming.empty()) {
-                        std::vector<struct epoll_event> events(captures.size());
-                        int nevent = epoll_wait(epoll_fd, events.data(), events.size(), -1);
-                        if (nevent == -1) {
-                            if (errno != EINTR)
-                                throw std::runtime_error("epoll_wait error, erron: " + std::to_string(errno));
-                        }
-
-                        for (int i = 0; i < nevent; i++) {
-                            int data = events[i].data.u32;
-                            std::shared_ptr<PixelBufferBase> pb(captures[data].dequeBuffer());
-                            render.send(pb);
-                        }
-                        render.send(Render::Commit());
-                    }
-                    close(epoll_fd);
-                }
-            );
-    }
-
-    std::vector<v4l2::Capture>& captures;
-    int epoll_fd;
-
-    messaging::Receiver incoming;
-    messaging::Sender render;
-    messaging::Sender calibrator;
-    void (CaptureWorker::*state)();
-};
-
 class RenderWorker
 {
 public:
+struct Commit {};
+
     RenderWorker(Render& render_) :
         render(render_)
     {}
@@ -169,8 +45,8 @@ public:
                             render.updateTexture(pbuf);
                         }
                     )
-                    .handle<Render::Commit>(
-                        [&](Render::Commit&)
+                    .handle<Commit>(
+                        [&](Commit&)
                         {
                             render.render(0);
                         }
@@ -191,6 +67,220 @@ private:
     void (RenderWorker::*state)();
 };
 
+class CaptureWorker
+{
+public:
+    struct PreviewAll {};
+
+    struct PreviewOne
+    {
+        PreviewOne(int num_ = 0) :
+            num(num_)
+        {}
+
+        int num;
+    };
+
+    CaptureWorker(std::vector<v4l2::Capture>& caps, enum v4l2::PixFormat pixFormat,
+                  const std::vector<std::vector<PixelBufferBase>>& bufBank,
+                  messaging::Sender render_) :
+        captures(caps),
+        render(render_)
+    {
+        for (size_t i = 0; i < captures.size(); i++) {
+            captures[i].open("/dev/video" + std::to_string(i), pixFormat, bufBank[i]);
+            captures[i].start();
+        }
+    }
+
+    void run()
+    {
+        try {
+            for (;;) {
+                incoming.wait()
+                    .handle<PreviewAll>(
+                        [&](const PreviewAll&)
+                        {
+                            epoll_fd = epoll_create1(0);
+
+                            for (size_t i = 0; i < captures.size(); i++) {
+                                struct epoll_event event = {};
+                                event.data.u32 = i;
+                                event.events = EPOLLIN; // do not use edge trigger
+                                int ret = epoll_ctl(epoll_fd, EPOLL_CTL_ADD, captures[i].getFd(),
+                                        &event);
+                                if (ret == -1)
+                                    throw std::runtime_error("EPOLL_CTL_ADD error");
+                            }
+
+                            while (incoming.empty()) {
+                                std::vector<struct epoll_event> events(captures.size());
+                                int nevent = epoll_wait(epoll_fd, events.data(), events.size(), -1);
+                                if (nevent == -1) {
+                                    if (errno != EINTR)
+                                        throw std::runtime_error("epoll_wait error, erron: " + std::to_string(errno));
+                                }
+
+                                for (int i = 0; i < nevent; i++) {
+                                    int data = events[i].data.u32;
+                                    std::shared_ptr<PixelBufferBase> pb(captures[data].dequeBuffer());
+                                    render.send(pb);
+                                }
+                                render.send(RenderWorker::Commit());
+                            }
+
+                            // do not stop, bug in kernel driver
+                            // for (auto& m : captures) {
+                                // m.stop();
+                            // }
+                            close(epoll_fd);
+                        }
+                    )
+                    .handle<PreviewOne>(
+                        [&](const PreviewOne& msg)
+                        {
+                            currentCapture = msg.num;
+                            epoll_fd = epoll_create1(0);
+                            {
+                                // captures[currentCapture].start();
+                                struct epoll_event event = {};
+                                event.data.u32 = currentCapture;
+                                event.events = EPOLLIN;
+                                int ret = epoll_ctl(epoll_fd, EPOLL_CTL_ADD, captures[currentCapture].getFd(), &event);
+                                if (ret == -1)
+                                    throw std::runtime_error("EPOLL_CTL_ADD error");
+                            }
+
+                            while (incoming.empty()) {
+                                struct epoll_event event;
+                                int nevent = epoll_wait(epoll_fd, &event, 1, -1);
+                                if (nevent == -1) {
+                                    if (errno != EINTR)
+                                        throw std::runtime_error("epoll_wait error, erron: " + std::to_string(errno));
+                                }
+
+                                int data = event.data.u32;
+                                std::shared_ptr<PixelBufferBase> pb(captures[data].dequeBuffer());
+                                render.send(pb);
+                                render.send(RenderWorker::Commit());
+                            }
+
+                            // do not stop, bug in kernel driver
+                            // captures[currentCapture].stop();
+                            close(epoll_fd);
+                        }
+                    );
+            }
+        } catch (messaging::CloseQueue&) {
+        }
+    }
+
+    void done()
+    {
+        getSender().send(messaging::CloseQueue());
+    }
+
+    messaging::Sender getSender()
+    {
+        return incoming;
+    }
+
+private:
+    std::vector<v4l2::Capture>& captures;
+    int epoll_fd;
+    int currentCapture = 0;
+
+    messaging::Receiver incoming;
+    messaging::Sender render;
+    messaging::Sender calibrator;
+    void (CaptureWorker::*state)();
+};
+
+#if 0
+class CliWorker
+{
+struct Input
+{
+    std::string str;
+    Input(const std::string str_) :
+        str(str_)
+    {}
+};
+
+public:
+    CliWorker(replxx::Replxx& rx_, messaging::Sender capture_) :
+        rx(rx_),
+        capture(capture_)
+    {
+    }
+
+    void run()
+    {
+        state = &CliWorker::intrinsicStep;
+        try {
+            for (;;) {
+                (this->*state)();
+            }
+        } catch (messaging::CloseQueue&) {
+        }
+    }
+
+    void done()
+    {
+        getSender().send(messaging::CloseQueue());
+    }
+
+    messaging::Sender getSender()
+    {
+        return incoming;
+    }
+
+private:
+    void intrinsicStep()
+    {
+        capture.send(v4l2::PreviewAll());
+        incoming.wait()
+            .handle<Input>(
+                [&](const Input& in)
+                {
+                    capture.send();
+                    state = &CliWorker::calibOneStep;
+                }
+            );
+    }
+
+    void calibOneStep()
+    {
+        // capture.send(messaging::);
+        // incoming.wait()
+            // .handle<>(
+            // );
+    }
+
+    replxx::Replxx& rx;
+    messaging::Receiver incoming;
+    messaging::Sender capture;
+
+    void (CliWorker::*state)();
+};
+#endif
+
+// namespace menu
+// {
+
+// struct Pack
+// {
+    // std::string help;
+
+// };
+
+// struct MsgPack
+// {
+    // std::map<std::string>
+// };
+
+// }
+
 int main()
 {
     int cameraNum = 4;
@@ -201,19 +291,24 @@ int main()
     int pixelSize = pixelFmt == v4l2::PixFormat::XBGR32 ? 4 : 4;
     int imgSize = imgHeight * imgWidth * pixelSize;
 
-    signal(SIGINT, [](int){ keepRunning = false; });
+    // signal(SIGINT, [](int){ keepRunning = false; });
     std::vector<v4l2::Capture> captures(cameraNum);
 
     try {
-        using Replxx = replxx::Replxx;
-        using namespace std::placeholders;
-        std::string input;
-        char cinput[512];
-        int cread;
 
-#if 0
+        Render render(imgWidth, imgHeight, pixelSize, cameraNum, qBufNum);
+        render.init();
+        std::vector<std::vector<PixelBufferBase>> bufBank = render.getBufferBank();
+
+        RenderWorker renderWorker(render);
+        CaptureWorker capWorker(captures, pixelFmt, bufBank, renderWorker.getSender());
+
+        // cmdline interface
+        using namespace std::placeholders;
+        using Replxx = replxx::Replxx;
+        std::string input;
+
         replxx::Replxx rx;
-        Tick tick(rx);
         rx.install_window_change_handler();
 
         rx.set_max_history_size(128);
@@ -237,8 +332,59 @@ int main()
 
         std::string prompt {"\x1b[1;32mreplxx\x1b[0m> "};
 
+        // run thread
+        std::thread renderThread(&RenderWorker::run, &renderWorker);
+        std::thread captureThread(&CaptureWorker::run, &capWorker);
+        messaging::Sender capQueue(capWorker.getSender());
+        capQueue.send(CaptureWorker::PreviewAll());
+        // capQueue.send(CaptureWorker::PreviewOne(0));
+
+        std::string help1(std::string("input number: 0 to ") + std::to_string(captures.size() - 1) + " to select device");
+
+        std::string help2(std::string("Input:\n") +
+                          "\t\'b\': back");
+
+        const std::string* phelp = &help1;
+
+        std::function<void(void)>* stage;
+        std::function<void(void)> f2;
+
+        std::function<void(void)> f1 =
+            [&]()
+            {
+                int num;
+                try {
+                    num = std::stoi(input);
+
+                    if (num >= captures.size()) {
+                        throw(num);
+                    }
+
+                    capQueue.send(CaptureWorker::PreviewOne(num));
+                    stage = &f2;
+                    phelp = &help2;
+                } catch (...) {
+                    std::cout << "invalid input" << std::endl;
+                }
+            };
+
+        f2 =
+            [&]()
+            {
+                if (input.compare("b") == 0) {
+                    capQueue.send(CaptureWorker::PreviewAll());
+                    stage = &f1;
+                    phelp = &help2;
+                } else {
+                    std::cout << "invalid input" << std::endl;
+                }
+            };
+        stage = &f1;
+
         for (;;) {
             char const* cinput{ nullptr };
+
+            std::cout << *phelp << std::endl;
 
             do {
                 cinput = rx.input(prompt);
@@ -250,7 +396,8 @@ int main()
 
             // change cinput into a std::string
             // easier to manipulate
-            std::string input {cinput};
+            // std::string input {cinput};
+            input = std::string(cinput);
 
             if (input.empty()) {
                 // user hit enter on an empty line
@@ -306,118 +453,18 @@ int main()
 
             } else {
                 // default action
-                // echo the input
 
-                rx.print( "%s\n", input.c_str() );
+                (*stage)();
 
                 rx.history_add( input );
                 continue;
             }
         }
-#endif
-
-        Render render(imgWidth, imgHeight, pixelSize, cameraNum, qBufNum);
-        render.init();
-        std::vector<std::vector<PixelBufferBase>> bufBank = render.getBufferBank();
-
-        RenderWorker renderWorker(render);
-        CaptureWorker capWorker(captures, pixelFmt, bufBank, renderWorker.getSender());
-
-        std::thread renderThread(&RenderWorker::run, &renderWorker);
-        std::thread captureThread(&CaptureWorker::run, &capWorker);
-        messaging::Sender capQueue(capWorker.getSender());
-        capQueue.send(v4l2::Start());
-
-        while (keepRunning) {
-             std::this_thread::sleep_for(std::chrono::seconds(1));
-        };
 
         capWorker.done();
         renderWorker.done();
         captureThread.join();
         renderThread.join();
-
-#if 0
-        for (size_t i = 0; i < captures.size(); i++) {
-            captures[i].open("/dev/video" + std::to_string(i), pixelFmt,
-                             bufBank[i]);
-            captures[i].start();
-
-            struct epoll_event event = {};
-            event.data.u32 = i;
-            event.events = EPOLLIN; // do not use edge trigger
-            int ret = epoll_ctl(epoll_fd, EPOLL_CTL_ADD, captures[i].getFd(),
-                    &event);
-            if (ret == -1) {
-                throw std::runtime_error("EPOLL_CTL_ADD error");
-            }
-        }
-
-        int frameCount = 0;
-        double previousTime = glfwGetTime();
-        double currentTime;
-
-        int index[4] = {0, 0, 0, 0};
-
-        struct epoll_event events[5];
-        int nevent;
-
-        // add stdin to epoll
-        struct epoll_event event;
-        event.data.u32 = 4;
-        event.events = EPOLLIN;
-        fcntl(0, F_SETFL, fcntl(0, F_GETFL) | O_NONBLOCK);
-        if (epoll_ctl(epoll_fd, EPOLL_CTL_ADD, 0, &event)) {
-            throw std::runtime_error("EPOLL_CTL_ADD err: " +
-                                     std::to_string(errno));
-        }
-
-        while (keepRunning) {
-            glfwPollEvents();
-
-            nevent = epoll_wait(epoll_fd, events, 5, -1);
-            if (nevent == -1) {
-                if (errno == EINTR)
-                    break;
-                throw std::runtime_error("epoll_wait error, erron: " + std::to_string(errno));
-            }
-
-            for (int i = 0; i < nevent; i++) {
-                int data = events[i].data.u32;
-                switch (data) {
-                case 0:
-                case 1:
-                case 2:
-                case 3:
-                {
-                    v4l2::Buffer buf(captures[data].dequeBuffer());
-                    render.updateTexture(buf);
-                    break;
-                }
-                case 4:
-                    cread = read(0, cinput, sizeof(cinput));
-                    cinput[cread] = '\0';
-                    printf("%d %s", cread, cinput);
-                    // std::cout << cinput << std::endl;
-                    break;
-                default:
-                    std::cout << "unknow event" << std::endl;
-                    break;
-                }
-            }
-
-            render.render(0);
-
-            currentTime = glfwGetTime();
-            frameCount++;
-            double deltaT = currentTime - previousTime;
-            if (deltaT >= 1.0) {
-                // std::cout << "frame: " << frameCount / deltaT << std::endl;
-                frameCount = 0;
-                previousTime = currentTime;
-            }
-        }
-#endif
     } catch (const std::exception& e) {
         std::cerr << e.what() << std::endl;
         return -1;

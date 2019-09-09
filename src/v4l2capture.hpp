@@ -10,8 +10,6 @@
 #include "message.hpp"
 
 namespace v4l2 {
-    struct Start {};
-
     enum class PixFormat
     {
         XBGR32 = V4L2_PIX_FMT_XBGR32,

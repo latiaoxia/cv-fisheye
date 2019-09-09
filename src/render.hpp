@@ -17,8 +17,6 @@
 class Render
 {
 public:
-    struct Commit {};
-
     struct Vertex
     {
         glm::vec2 pos;
